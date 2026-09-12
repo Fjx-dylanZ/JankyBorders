@@ -33,7 +33,12 @@ static bool border_check_too_small(struct border* border, CGRect window_frame) {
 static bool border_calculate_bounds(struct border* border, CGRect* frame, struct settings* settings) {
   CGRect window_frame;
   if (border->is_proxy) window_frame = border->target_bounds;
-  else SLSGetWindowBounds(border->cid, border->target_wid, &window_frame);
+  else if (SLSGetWindowBounds(border->cid,
+                               border->target_wid,
+                               &window_frame) != kCGErrorSuccess) {
+    border_hide(border);
+    return false;
+  }
 
   border->target_bounds = window_frame;
   border->too_small = border_check_too_small(border, window_frame);
@@ -180,17 +185,28 @@ void border_update_internal(struct border* border, struct settings* settings) {
   CGRect frame;
   if (!border_calculate_bounds(border, &frame, settings)) return;
 
+  // Keep geometry available to proxies even before creating a real surface.
+  if (!border->wid) border->frame = frame;
+
   uint64_t tags = window_tags(cid, border->target_wid);
   border->sticky = tags & WINDOW_TAG_STICKY;
-  if (!border->sticky && !is_space_visible(cid, border->sid)) return;
+  if (!border->is_proxy) {
+    if (!window_is_visible(cid, border->target_wid)) {
+      border_hide(border);
+      return;
+    }
 
+    uint64_t sid = window_space_id(cid, border->target_wid);
+    if (border->sid != sid) {
+      border->sid = sid;
+      if (border->wid && sid) window_send_to_space(cid, border->wid, sid);
+    }
+  }
 
-  bool shown = false;
-  SLSWindowIsOrderedIn(cid, border->target_wid, &shown);
-  if (!shown && !border->is_proxy) {
+  if (!border->sticky && !is_space_visible(cid, border->sid)) {
     border_hide(border);
     return;
-  } 
+  }
 
   int level = window_level(cid, border->target_wid);
   int sub_level = window_sub_level(cid, border->target_wid);
@@ -309,30 +325,48 @@ void border_move(struct border* border) {
     pthread_mutex_unlock(&border->mutex);
     return;
   }
-  pthread_mutex_unlock(&border->mutex);
+
+  if (!border->is_proxy
+      && !window_is_visible(border->cid, border->target_wid)) {
+    border_hide(border);
+    pthread_mutex_unlock(&border->mutex);
+    return;
+  }
 
   struct settings* settings = border_get_settings(border);
-  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-    pthread_mutex_lock(&border->mutex);
-    CGRect window_frame;
-    SLSGetWindowBounds(border->cid, border->target_wid, &window_frame);
-    CGPoint origin = { .x = window_frame.origin.x
-                            - settings->border_width
-                            - BORDER_PADDING,
-                       .y = window_frame.origin.y
-                            - settings->border_width
-                            - BORDER_PADDING          };
-
-    CFTypeRef transaction = SLSTransactionCreate(border->cid);
-    if (transaction) {
-      SLSTransactionMoveWindowWithGroup(transaction, border->wid, origin);
-      SLSTransactionCommit(transaction, 0);
-      CFRelease(transaction);
-    }
-    border->target_bounds = window_frame;
-    border->origin = origin;
+  bool shown = false;
+  if (border->wid) SLSWindowIsOrderedIn(border->cid, border->wid, &shown);
+  if (!shown || border->too_small) {
+    // A move can be the first event after an offscreen target becomes visible.
+    border_update_internal(border, settings);
     pthread_mutex_unlock(&border->mutex);
-  });
+    return;
+  }
+
+  CGRect window_frame;
+  if (SLSGetWindowBounds(border->cid,
+                          border->target_wid,
+                          &window_frame) != kCGErrorSuccess) {
+    border_hide(border);
+    pthread_mutex_unlock(&border->mutex);
+    return;
+  }
+  CGPoint origin = { .x = window_frame.origin.x
+                          - settings->border_width
+                          - BORDER_PADDING,
+                     .y = window_frame.origin.y
+                          - settings->border_width
+                          - BORDER_PADDING          };
+
+  CFTypeRef transaction = SLSTransactionCreate(border->cid);
+  if (transaction) {
+    SLSTransactionMoveWindowWithGroup(transaction, border->wid, origin);
+    SLSTransactionCommit(transaction, 0);
+    CFRelease(transaction);
+  }
+  border->target_bounds = window_frame;
+  border->origin = origin;
+  pthread_mutex_unlock(&border->mutex);
 }
 
 void border_update(struct border* border, bool try_async) {
@@ -379,25 +413,5 @@ void border_hide(struct border* border) {
 }
 
 void border_unhide(struct border* border) {
-  pthread_mutex_lock(&border->mutex);
-  if (border->too_small
-      || border->external_proxy_wid
-      || (!border->sticky && !is_space_visible(border->cid, border->sid))) {
-    pthread_mutex_unlock(&border->mutex);
-    return;
-  }
-
-  if (border->wid) {
-    struct settings* settings = border_get_settings(border);
-    CFTypeRef transaction = SLSTransactionCreate(border->cid);
-    if (transaction) {
-      SLSTransactionOrderWindow(transaction,
-                                border->wid,
-                                settings->border_order,
-                                border->target_wid      );
-      SLSTransactionCommit(transaction, 0);
-      CFRelease(transaction);
-    }
-  }
-  pthread_mutex_unlock(&border->mutex);
+  border_update(border, false);
 }

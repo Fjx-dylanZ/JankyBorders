@@ -256,6 +256,16 @@ void windows_determine_and_focus_active_window(struct table* windows) {
 
 void windows_draw_borders_on_current_spaces(struct table* windows) {
   debug("Space Change: Consistency check\n");
+  // Include targets on departed Spaces and those omitted from the visible
+  // window list. Visibility only controls their surfaces, never tracking.
+  for (int i = 0; i < windows->capacity; ++i) {
+    struct bucket* bucket = windows->buckets[i];
+    while (bucket) {
+      if (bucket->value) border_update(bucket->value, true);
+      bucket = bucket->next;
+    }
+  }
+
   int cid = SLSMainConnectionID();
   CFArrayRef displays = SLSCopyManagedDisplays(cid);
   uint32_t space_count = CFArrayGetCount(displays);
@@ -278,7 +288,7 @@ void windows_draw_borders_on_current_spaces(struct table* windows) {
   CFArrayRef window_list = SLSCopyWindowsWithOptionsAndTags(cid,
                                                             0,
                                                             space_list_ref,
-                                                            0x2,
+                                                            0x7,
                                                             &set_tags,
                                                             &clear_tags    );
 
@@ -291,8 +301,7 @@ void windows_draw_borders_on_current_spaces(struct table* windows) {
           if (window_suitable(iterator)) {
             uint32_t wid = SLSWindowIteratorGetWindowID(iterator);
             struct border* border = table_find(windows, &wid);
-            if (border) border_update(border, true);
-            else {
+            if (!border) {
               debug("Creating Missing Window: %d\n", wid);
               windows_window_create(windows, wid, window_space_id(cid, wid));
             }
@@ -338,6 +347,8 @@ void windows_add_existing_windows(struct table* windows) {
     CFRelease(display_spaces_ref);
   }
 
+  // Track hidden and minimized targets too. They need event subscriptions to
+  // regain borders later; border_update decides whether a surface may show.
   uint64_t set_tags = 1;
   uint64_t clear_tags = 0;
 
@@ -349,7 +360,7 @@ void windows_add_existing_windows(struct table* windows) {
   CFArrayRef window_list_ref = SLSCopyWindowsWithOptionsAndTags(cid,
                                                                 0,
                                                                 space_list_ref,
-                                                                0x2,
+                                                                0x7,
                                                                 &set_tags,
                                                                 &clear_tags  );
   if (window_list_ref) {

@@ -10,12 +10,12 @@
 #define WINDOW_TAG_IGNORES_CYCLE (1ULL << 18)
 #define WINDOW_TAG_MODAL         (1ULL << 31)
 
+// Suitability is structural, not visibility. Hidden document windows lose
+// the mapped attribute but still need subscriptions before they return.
 static inline bool window_suitable(CFTypeRef iterator) {
   uint64_t tags = SLSWindowIteratorGetTags(iterator);
-  uint64_t attributes = SLSWindowIteratorGetAttributes(iterator);
   uint32_t parent_wid = SLSWindowIteratorGetParentID(iterator);
   if ((parent_wid == 0)
-       && ((attributes & 0x2) || (tags & 0x400000000000000))
        && !(tags & WINDOW_TAG_ATTACHED)
        && !(tags & WINDOW_TAG_IGNORES_CYCLE)
        && ((tags & WINDOW_TAG_DOCUMENT) || ((tags & WINDOW_TAG_FLOATING)
@@ -44,6 +44,31 @@ static inline uint64_t window_tags(int cid, uint32_t wid) {
   }
   CFRelease(window_ref);
   return tags;
+}
+
+static inline bool window_is_visible(int cid, uint32_t wid) {
+  bool ordered_in = false;
+  if (SLSWindowIsOrderedIn(cid, wid, &ordered_in) != kCGErrorSuccess
+      || !ordered_in) return false;
+
+  // Query only this target, not the session's window list. Ordered-in windows
+  // can still be offscreen, including inactive native tabs.
+  // This API takes raw CGWindowIDs in a CFArray, not CFNumber objects.
+  const void* window_id = (const void*)(uintptr_t)wid;
+  CFArrayRef window_ids = CFArrayCreate(NULL, &window_id, 1, NULL);
+  if (!window_ids) return false;
+  CFArrayRef windows = CGWindowListCreateDescriptionFromArray(window_ids);
+  CFRelease(window_ids);
+  if (!windows) return false;
+
+  bool visible = false;
+  if (CFArrayGetCount(windows) == 1) {
+    CFDictionaryRef window = CFArrayGetValueAtIndex(windows, 0);
+    // An absent record or kCGWindowIsOnscreen key means not visible, not dead.
+    visible = CFDictionaryGetValue(window, kCGWindowIsOnscreen) == kCFBooleanTrue;
+  }
+  CFRelease(windows);
+  return visible;
 }
 
 static inline uint32_t get_front_window(int cid) {

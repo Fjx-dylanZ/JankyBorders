@@ -7,12 +7,15 @@ user windows on macOS 14.0+. It enhances the user experience by visually
 highlighting the currently focused window without relying on the accessibility
 API, thereby being faster than comparable tools.
 
+This fork of [FelixKratz/JankyBorders](https://github.com/FelixKratz/JankyBorders)
+tracks upstream and carries the visibility reconciliation described below.
+
 ## Usage
 ### Install
-The binary can be made available by installing it through Homebrew:
+Install this fork through its dedicated Homebrew tap:
 ```bash
-brew tap FelixKratz/formulae
-brew install borders
+brew tap fjx-dylanz/borders
+brew install --HEAD fjx-dylanz/borders/borders
 ```
 
 For a comprehensive overview of all available options and commands, consult the
@@ -40,7 +43,7 @@ along with AeroSpace.
 ### Bootstrap with brew
 If you want to run this as a separate service, you could use:
 ```bash
-brew services start borders
+brew services start fjx-dylanz/borders/borders
 ```
 
 ### Configuring the appearance
@@ -73,6 +76,37 @@ borders "${options[@]}"
 If a `borders` process is already running, invoking a new `borders` instance
 with any combination of the available options will update the properties of
 the already running instance.
+
+### Visibility reconciliation
+
+This checkout retains structurally suitable hidden/minimized windows for event
+tracking, but shows an outline only when the real target is both ordered in and
+reported onscreen by CoreGraphics. A missing visibility record suppresses the
+outline without declaring the window dead. Unhide, movement, and native Space
+transitions recheck visibility and can recreate a previously suppressed surface.
+The movement path queries only its target, not the global window list.
+
+The [Homebrew tap](https://github.com/Fjx-dylanZ/homebrew-borders) builds `main`
+directly from [this fork](https://github.com/Fjx-dylanZ/JankyBorders), without an
+embedded patch. The executable remains `borders`, and configuration remains at
+`~/.config/borders/bordersrc`.
+
+To update to the latest fork commit:
+
+```bash
+brew update
+brew upgrade --fetch-HEAD fjx-dylanz/borders/borders
+brew services restart fjx-dylanz/borders/borders
+```
+
+Only one Borders package should be linked and running. When migrating from a
+different tap or `borders-paneru`, stop its service and uninstall that package
+before installing this formula. Uninstalling the package does not remove
+`~/.config/borders/bordersrc`.
+
+For development, `origin` points to the official repository and `fork` points
+to `Fjx-dylanZ/JankyBorders`. Publish changes to the fork's `main` branch; future
+Homebrew HEAD upgrades build those commits directly.
 
 ## Documentation
 Local documentation is available as `man borders` and as a rendered version in

@@ -167,6 +167,8 @@ static inline void yabai_proxy_end(struct table* windows, uint32_t wid, uint32_t
 
     CFTypeRef transaction = SLSTransactionCreate(border->cid);
     if (transaction) {
+      // The deferred update must recheck the real target before showing it.
+      SLSTransactionOrderWindow(transaction, border->wid, 0, border->target_wid);
       SLSTransactionSetWindowAlpha(transaction, proxy->wid, 0.f);
       SLSTransactionSetWindowAlpha(transaction, border->wid, 1.f);
       SLSTransactionCommit(transaction, 0);

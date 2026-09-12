@@ -35,6 +35,26 @@ static bool is_own_window(int cid, uint32_t wid) {
   return pid == g_pid;
 }
 
+static void window_update_deferred(struct table* windows, uint32_t wid, int delay) {
+  struct border* border = table_find(windows, &wid);
+  if (border) {
+    if (border->event_buffer.is_coalescing) return;
+    border->event_buffer.is_coalescing = true;
+  }
+
+  // Ordering notifications can precede the CG visibility change. Keep only
+  // one settling recheck per tracked target, and never capture its lifetime.
+  DELAY_ASYNC_EXEC_ON_MAIN_THREAD(delay, {
+    uint32_t target_wid = wid;
+    struct border* current = table_find(windows, &target_wid);
+    if (current) {
+      current->event_buffer.is_coalescing = false;
+      border_update(current, true);
+    }
+    windows_determine_and_focus_active_window(windows);
+  });
+}
+
 static void window_spawn_handler(uint32_t event, struct window_spawn_data* data, size_t _, int cid) {
   struct table* windows = &g_windows;
   uint32_t wid = data->wid;
@@ -46,6 +66,7 @@ static void window_spawn_handler(uint32_t event, struct window_spawn_data* data,
     if (windows_window_create(windows, wid, sid)) {
       debug("Window Created: %d %d\n", wid, sid);
       windows_determine_and_focus_active_window(windows);
+      window_update_deferred(windows, wid, 10000);
     }
   } else if (event == EVENT_WINDOW_DESTROY) {
     if (windows_window_destroy(windows, wid, sid)) {
@@ -70,20 +91,18 @@ static void window_modify_handler(uint32_t event, uint32_t* window_id, size_t _,
   } else if (event == EVENT_WINDOW_REORDER) {
     debug("Window Reorder (and focus): %d\n", wid);
     windows_window_update(windows, wid);
-    DELAY_ASYNC_EXEC_ON_MAIN_THREAD(10000, {
-      windows_determine_and_focus_active_window(windows);
-    });
+    window_update_deferred(windows, wid, 10000);
   } else if (event == EVENT_WINDOW_LEVEL) {
     debug("Window Level: %d\n", wid);
     windows_window_update(windows, wid);
   } else if (event == EVENT_WINDOW_TITLE || event == EVENT_WINDOW_UPDATE) {
     debug("Window Focus\n");
-    DELAY_ASYNC_EXEC_ON_MAIN_THREAD(50000, {
-      windows_determine_and_focus_active_window(windows);
-    });
+    windows_window_update(windows, wid);
+    window_update_deferred(windows, wid, 50000);
   } else if (event == EVENT_WINDOW_UNHIDE) {
     debug("Window Unhide: %d\n", wid);
     windows_window_unhide(windows, wid);
+    window_update_deferred(windows, wid, 10000);
   } else if (event == EVENT_WINDOW_HIDE) {
     debug("Window Hide: %d\n", wid);
     windows_window_hide(windows, wid);
@@ -101,8 +120,12 @@ static void front_app_handler() {
 }
 
 static void space_handler() {
+  static bool pending = false;
+  if (pending) return;
+  pending = true;
   // Not all native-fullscreen windows have yet updated their space id...
   DELAY_ASYNC_EXEC_ON_MAIN_THREAD(20000, {
+    pending = false;
     windows_draw_borders_on_current_spaces(&g_windows);
   });
 }
